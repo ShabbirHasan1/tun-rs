@@ -68,7 +68,7 @@ jobs:
             export CC=clang
             export CXX=clang++
             export CARGO_TERM_COLOR=always
-            cd /home/runner/work/tun-rs/tun-rs
+            find ./
             cargo clippy --all-targets -- -D warnings
 
   build_n_test_android:

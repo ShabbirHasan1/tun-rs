@@ -8,6 +8,7 @@ use std::ffi::{c_void, CStr};
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::{io, mem, ptr};
+use std::sync::atomic::Ordering;
 
 pub enum TunTap {
     Tun(Tun),
@@ -136,6 +137,23 @@ impl TunTap {
                     }
                     Ok(eth_addr)
                 }
+            }
+        }
+    }
+    #[inline]
+    pub(crate) fn ignore_packet_info(&self) -> bool {
+        match &self {
+            TunTap::Tun(tun) => tun.ignore_packet_info(),
+            TunTap::Tap(_) => {
+                true
+            }
+        }
+        
+    }
+    pub(crate) fn set_ignore_packet_info(&self, ign: bool) {
+        match &self {
+            TunTap::Tun(tun) => tun.set_ignore_packet_info(ign),
+            TunTap::Tap(_) => {
             }
         }
     }

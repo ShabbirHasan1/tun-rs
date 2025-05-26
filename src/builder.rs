@@ -10,7 +10,7 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - **L3**: Network Layer (default for TUN interfaces).
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum Layer {
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd",target_os = "macos"))]
     L2,
     #[default]
     L3,

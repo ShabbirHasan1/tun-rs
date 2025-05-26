@@ -17,6 +17,7 @@ use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::{ffi::CStr, io, mem, net::IpAddr, os::unix::io::AsRawFd, ptr, sync::Mutex};
 use crate::platform::ETHER_ADDR_LEN;
+use crate::platform::macos::tuntap::TunTap;
 
 #[derive(Clone, Copy, Debug)]
 struct Route {
@@ -26,7 +27,7 @@ struct Route {
 
 /// A TUN device using the TUN macOS driver.
 pub struct DeviceImpl {
-    pub(crate) tun: Tun,
+    pub(crate) tun: TunTap,
     alias_lock: Mutex<()>,
 }
 
@@ -100,7 +101,7 @@ impl DeviceImpl {
             }
 
             DeviceImpl {
-                tun: Tun::new(tun),
+                tun: TunTap::Tun(Tun::new(tun)),
                 alias_lock: Mutex::new(()),
             }
         };
@@ -111,34 +112,16 @@ impl DeviceImpl {
     }
     pub(crate) fn from_tun(tun: Tun) -> Self {
         Self {
-            tun,
+            tun:TunTap::Tun(tun),
             alias_lock: Mutex::new(()),
         }
     }
     /// Prepare a new request.
-    /// # Safety
-    unsafe fn request(&self) -> io::Result<libc::ifreq> {
-        let tun_name = self.name()?;
-        let mut req: libc::ifreq = mem::zeroed();
-        ptr::copy_nonoverlapping(
-            tun_name.as_ptr() as *const c_char,
-            req.ifr_name.as_mut_ptr(),
-            tun_name.len(),
-        );
-
-        Ok(req)
+     fn request(&self) -> io::Result<libc::ifreq> {
+        self.tun.request()
     }
-    /// # Safety
-    unsafe fn request_v6(&self) -> io::Result<in6_ifreq> {
-        let tun_name = self.name()?;
-        let mut req: in6_ifreq = mem::zeroed();
-        ptr::copy_nonoverlapping(
-            tun_name.as_ptr() as *const c_char,
-            req.ifra_name.as_mut_ptr(),
-            tun_name.len(),
-        );
-        req.ifr_ifru.ifru_flags = IN6_IFF_NODAD as _;
-        Ok(req)
+     fn request_v6(&self) -> io::Result<in6_ifreq> {
+        self.tun.request_v6()
     }
 
     fn current_route(&self) -> Option<Route> {
@@ -205,58 +188,39 @@ impl DeviceImpl {
     }
 
     fn add_route(&self, addr: IpAddr, netmask: IpAddr) -> io::Result<()> {
-        let if_index = self.if_index()?;
-        let prefix_len = ipnet::ip_mask_to_prefix(netmask)
-            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        let mut manager = route_manager::RouteManager::new()?;
-        let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
-        manager.add(&route)?;
+        // let if_index = self.if_index()?;
+        // let prefix_len = ipnet::ip_mask_to_prefix(netmask)
+        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        // let mut manager = route_manager::RouteManager::new()?;
+        // let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
+        // manager.add(&route)?;
         Ok(())
     }
 
     fn set_route(&self, old_route: Option<Route>, new_route: Route) -> io::Result<()> {
-        let if_index = self.if_index()?;
-        let mut manager = route_manager::RouteManager::new()?;
-        if let Some(old_route) = old_route {
-            let prefix_len = ipnet::ip_mask_to_prefix(old_route.netmask)
-                .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-            let route =
-                route_manager::Route::new(old_route.addr, prefix_len).with_if_index(if_index);
-            let result = manager.delete(&route);
-            if let Err(e) = result {
-                log::warn!("route {route:?} {e:?}");
-            }
-        }
-
-        let prefix_len = ipnet::ip_mask_to_prefix(new_route.netmask)
-            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        let route = route_manager::Route::new(new_route.addr, prefix_len).with_if_index(if_index);
-        manager.add(&route)?;
+        // let if_index = self.if_index()?;
+        // let mut manager = route_manager::RouteManager::new()?;
+        // if let Some(old_route) = old_route {
+        //     let prefix_len = ipnet::ip_mask_to_prefix(old_route.netmask)
+        //         .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        //     let route =
+        //         route_manager::Route::new(old_route.addr, prefix_len).with_if_index(if_index);
+        //     let result = manager.delete(&route);
+        //     if let Err(e) = result {
+        //         log::warn!("route {route:?} {e:?}");
+        //     }
+        // }
+        // 
+        // let prefix_len = ipnet::ip_mask_to_prefix(new_route.netmask)
+        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        // let route = route_manager::Route::new(new_route.addr, prefix_len).with_if_index(if_index);
+        // manager.add(&route)?;
         Ok(())
     }
 
     /// Retrieves the name of the network interface.
     pub fn name(&self) -> io::Result<String> {
-        let mut tun_name = [0u8; 64];
-        let mut name_len: socklen_t = 64;
-
-        let optval = &mut tun_name as *mut _ as *mut c_void;
-        let optlen = &mut name_len as *mut socklen_t;
-        unsafe {
-            if libc::getsockopt(
-                self.tun.as_raw_fd(),
-                SYSPROTO_CONTROL,
-                UTUN_OPT_IFNAME,
-                optval,
-                optlen,
-            ) < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(CStr::from_ptr(tun_name.as_ptr() as *const c_char)
-                .to_string_lossy()
-                .into())
-        }
+        self.tun.name()
     }
     /// Enables or disables the network interface.
     ///
@@ -405,9 +369,9 @@ impl DeviceImpl {
         Ok(())
     }
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
-        todo!()
+        self.tun.set_mac_address(eth_addr)
     }
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
-        todo!()
+        self.tun.mac_address()
     }
 }

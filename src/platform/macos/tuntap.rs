@@ -114,8 +114,7 @@ impl TunTap {
                     for (i, v) in eth_addr.iter().enumerate() {
                         ifr.ifr_ifru.ifru_addr.sa_data[i] = *v as _;
                     }
-                    let fd = ctl()?;
-                    siocsiflladdr(fd.inner, &mut ifr)?;
+                    siocsiflladdr(ctl()?.inner, &mut ifr)?;
                 }
                 Ok(())
             }
@@ -130,8 +129,7 @@ impl TunTap {
                     ifr.ifr_ifru.ifru_addr.sa_family = libc::AF_LINK as _;
                     ifr.ifr_ifru.ifru_addr.sa_len = ETHER_ADDR_LEN;
 
-                    let fd = ctl()?;
-                    siocgiflladdr(fd.inner, &mut ifr)?;
+                    siocgiflladdr(ctl()?.inner, &mut ifr)?;
                     let mut eth_addr = [0; ETHER_ADDR_LEN as usize];
                     for (i, v) in eth_addr.iter_mut().enumerate() {
                         *v = ifr.ifr_ifru.ifru_addr.sa_data[i] as _;

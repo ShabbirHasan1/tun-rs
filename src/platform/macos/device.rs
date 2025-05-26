@@ -16,6 +16,8 @@ use libc::{
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::{ffi::CStr, io, mem, net::IpAddr, os::unix::io::AsRawFd, ptr, sync::Mutex};
+use crate::platform::ETHER_ADDR_LEN;
+
 #[derive(Clone, Copy, Debug)]
 struct Route {
     addr: IpAddr,
@@ -193,12 +195,12 @@ impl DeviceImpl {
     }
 
     fn remove_route(&self, addr: IpAddr, netmask: IpAddr) -> io::Result<()> {
-        let if_index = self.if_index()?;
-        let prefix_len = ipnet::ip_mask_to_prefix(netmask)
-            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        let mut manager = route_manager::RouteManager::new()?;
-        let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
-        manager.delete(&route)?;
+        // let if_index = self.if_index()?;
+        // let prefix_len = ipnet::ip_mask_to_prefix(netmask)
+        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        // let mut manager = route_manager::RouteManager::new()?;
+        // let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
+        // manager.delete(&route)?;
         Ok(())
     }
 
@@ -401,5 +403,11 @@ impl DeviceImpl {
             }
         }
         Ok(())
+    }
+    pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
+        todo!()
+    }
+    pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
+        todo!()
     }
 }

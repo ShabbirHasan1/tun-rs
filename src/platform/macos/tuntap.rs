@@ -1,14 +1,21 @@
-use crate::platform::macos::sys::{in6_ifreq, siocgiflladdr, siocsiflladdr, IN6_IFF_NODAD};
+use crate::builder::DeviceConfig;
+use crate::platform::macos::sys::{
+    ctl_info, ctliocginfo, in6_ifreq, siocgiflladdr, siocsiflladdr, IN6_IFF_NODAD,
+    UTUN_CONTROL_NAME,
+};
 use crate::platform::macos::tap::Tap;
 use crate::platform::unix::device::ctl;
 use crate::platform::unix::Tun;
 use crate::platform::ETHER_ADDR_LEN;
-use libc::{c_char, socklen_t, SYSPROTO_CONTROL, UTUN_OPT_IFNAME};
+use crate::Layer;
+use libc::{
+    c_char, c_uint, sockaddr, socklen_t, AF_SYSTEM, AF_SYS_CONTROL, IFNAMSIZ, PF_SYSTEM,
+    SOCK_DGRAM, SYSPROTO_CONTROL, UTUN_OPT_IFNAME,
+};
 use std::ffi::{c_void, CStr};
-use std::io::{IoSlice, IoSliceMut};
+use std::io::{ErrorKind, IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::{io, mem, ptr};
-use std::sync::atomic::Ordering;
 
 pub enum TunTap {
     Tun(Tun),
@@ -16,6 +23,92 @@ pub enum TunTap {
 }
 
 impl TunTap {
+    pub fn new(config: DeviceConfig) -> io::Result<Self> {
+        let layer = config.layer.unwrap_or(Layer::L3);
+        let packet_information = config.packet_information.unwrap_or(false);
+        let dev_name = config.dev_name;
+        match layer {
+            Layer::L2 => Ok(TunTap::Tap(Tap::new(dev_name)?)),
+            Layer::L3 => {
+                let id = dev_name
+                    .as_ref()
+                    .map(|tun_name| {
+                        if tun_name.len() > IFNAMSIZ {
+                            return Err(io::Error::new(
+                                ErrorKind::InvalidInput,
+                                "device name too long",
+                            ));
+                        }
+                        if !tun_name.starts_with("utun") {
+                            return Err(io::Error::new(
+                                ErrorKind::InvalidInput,
+                                "device name must start with utun",
+                            ));
+                        }
+                        tun_name[4..]
+                            .parse::<u32>()
+                            .map(|v| v + 1)
+                            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
+
+                unsafe {
+                    let fd = libc::socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
+                    let tun = crate::platform::unix::Fd::new(fd)?;
+
+                    let mut info = ctl_info {
+                        ctl_id: 0,
+                        ctl_name: {
+                            let mut buffer = [0; 96];
+                            for (i, o) in UTUN_CONTROL_NAME.as_bytes().iter().zip(buffer.iter_mut())
+                            {
+                                *o = *i as _;
+                            }
+                            buffer
+                        },
+                    };
+
+                    if let Err(err) = ctliocginfo(tun.inner, &mut info as *mut _ as *mut _) {
+                        return Err(io::Error::from(err));
+                    }
+
+                    let addr = libc::sockaddr_ctl {
+                        sc_id: info.ctl_id,
+                        sc_len: mem::size_of::<libc::sockaddr_ctl>() as _,
+                        sc_family: AF_SYSTEM as _,
+                        ss_sysaddr: AF_SYS_CONTROL as _,
+                        sc_unit: id as c_uint,
+                        sc_reserved: [0; 5],
+                    };
+
+                    let address = &addr as *const libc::sockaddr_ctl as *const sockaddr;
+                    if libc::connect(tun.inner, address, mem::size_of_val(&addr) as socklen_t) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    let mut tun_name = [0u8; 64];
+                    let mut name_len: socklen_t = 64;
+
+                    let optval = &mut tun_name as *mut _ as *mut c_void;
+                    let optlen = &mut name_len as *mut socklen_t;
+                    if libc::getsockopt(
+                        tun.inner,
+                        SYSPROTO_CONTROL,
+                        UTUN_OPT_IFNAME,
+                        optval,
+                        optlen,
+                    ) < 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let tun = Tun::new(tun);
+                    tun.set_ignore_packet_info(!packet_information);
+                    Ok(TunTap::Tun(tun))
+                }
+            }
+        }
+    }
     pub fn name(&self) -> io::Result<String> {
         match &self {
             TunTap::Tun(tun) => {
@@ -144,17 +237,13 @@ impl TunTap {
     pub(crate) fn ignore_packet_info(&self) -> bool {
         match &self {
             TunTap::Tun(tun) => tun.ignore_packet_info(),
-            TunTap::Tap(_) => {
-                true
-            }
+            TunTap::Tap(_) => true,
         }
-        
     }
     pub(crate) fn set_ignore_packet_info(&self, ign: bool) {
         match &self {
             TunTap::Tun(tun) => tun.set_ignore_packet_info(ign),
-            TunTap::Tap(_) => {
-            }
+            TunTap::Tap(_) => {}
         }
     }
 }

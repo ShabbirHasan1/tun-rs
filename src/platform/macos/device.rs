@@ -6,18 +6,15 @@ use crate::{
 
 //const OVERWRITE_SIZE: usize = std::mem::size_of::<libc::__c_anonymous_ifr_ifru>();
 
+use crate::platform::macos::tuntap::TunTap;
 use crate::platform::unix::device::{ctl, ctl_v6};
 use crate::platform::unix::Tun;
+use crate::platform::ETHER_ADDR_LEN;
 use getifaddrs::{self, Interface};
-use libc::{
-    self, c_char, c_short, c_uint, c_void, sockaddr, socklen_t, AF_SYSTEM, AF_SYS_CONTROL,
-    IFF_RUNNING, IFF_UP, IFNAMSIZ, PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL, UTUN_OPT_IFNAME,
-};
+use libc::{self, c_char, c_short, IFF_RUNNING, IFF_UP};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
-use std::{ffi::CStr, io, mem, net::IpAddr, os::unix::io::AsRawFd, ptr, sync::Mutex};
-use crate::platform::ETHER_ADDR_LEN;
-use crate::platform::macos::tuntap::TunTap;
+use std::{io, mem, net::IpAddr, os::unix::io::AsRawFd, ptr, sync::Mutex};
 
 #[derive(Clone, Copy, Debug)]
 struct Route {
@@ -34,93 +31,24 @@ pub struct DeviceImpl {
 impl DeviceImpl {
     /// Create a new `Device` for the given `Configuration`.
     pub(crate) fn new(config: DeviceConfig) -> io::Result<Self> {
-        let id = config
-            .dev_name
-            .as_ref()
-            .map(|tun_name| {
-                if tun_name.len() > IFNAMSIZ {
-                    return Err(io::Error::new(
-                        ErrorKind::InvalidInput,
-                        "device name too long",
-                    ));
-                }
-                if !tun_name.starts_with("utun") {
-                    return Err(io::Error::new(
-                        ErrorKind::InvalidInput,
-                        "device name must start with utun",
-                    ));
-                }
-                tun_name[4..]
-                    .parse::<u32>()
-                    .map(|v| v + 1)
-                    .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))
-            })
-            .transpose()?
-            .unwrap_or(0);
-
-        let device = unsafe {
-            let fd = libc::socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
-            let tun = crate::platform::unix::Fd::new(fd)?;
-
-            let mut info = ctl_info {
-                ctl_id: 0,
-                ctl_name: {
-                    let mut buffer = [0; 96];
-                    for (i, o) in UTUN_CONTROL_NAME.as_bytes().iter().zip(buffer.iter_mut()) {
-                        *o = *i as _;
-                    }
-                    buffer
-                },
-            };
-
-            if let Err(err) = ctliocginfo(tun.inner, &mut info as *mut _ as *mut _) {
-                return Err(io::Error::from(err));
-            }
-
-            let addr = libc::sockaddr_ctl {
-                sc_id: info.ctl_id,
-                sc_len: mem::size_of::<libc::sockaddr_ctl>() as _,
-                sc_family: AF_SYSTEM as _,
-                ss_sysaddr: AF_SYS_CONTROL as _,
-                sc_unit: id as c_uint,
-                sc_reserved: [0; 5],
-            };
-
-            let address = &addr as *const libc::sockaddr_ctl as *const sockaddr;
-            if libc::connect(tun.inner, address, mem::size_of_val(&addr) as socklen_t) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            let mut tun_name = [0u8; 64];
-            let mut name_len: socklen_t = 64;
-
-            let optval = &mut tun_name as *mut _ as *mut c_void;
-            let optlen = &mut name_len as *mut socklen_t;
-            if libc::getsockopt(tun.inner, SYSPROTO_CONTROL, UTUN_OPT_IFNAME, optval, optlen) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            DeviceImpl {
-                tun: TunTap::Tun(Tun::new(tun)),
-                alias_lock: Mutex::new(()),
-            }
+        let tun_tap = TunTap::new(config)?;
+        let device_impl = DeviceImpl {
+            tun: tun_tap,
+            alias_lock: Mutex::new(()),
         };
-        device
-            .tun
-            .set_ignore_packet_info(!config.packet_information.unwrap_or(false));
-        Ok(device)
+        Ok(device_impl)
     }
     pub(crate) fn from_tun(tun: Tun) -> Self {
         Self {
-            tun:TunTap::Tun(tun),
+            tun: TunTap::Tun(tun),
             alias_lock: Mutex::new(()),
         }
     }
     /// Prepare a new request.
-     fn request(&self) -> io::Result<libc::ifreq> {
+    fn request(&self) -> io::Result<libc::ifreq> {
         self.tun.request()
     }
-     fn request_v6(&self) -> io::Result<in6_ifreq> {
+    fn request_v6(&self) -> io::Result<in6_ifreq> {
         self.tun.request_v6()
     }
 
@@ -178,43 +106,43 @@ impl DeviceImpl {
     }
 
     fn remove_route(&self, addr: IpAddr, netmask: IpAddr) -> io::Result<()> {
-        // let if_index = self.if_index()?;
-        // let prefix_len = ipnet::ip_mask_to_prefix(netmask)
-        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        // let mut manager = route_manager::RouteManager::new()?;
-        // let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
-        // manager.delete(&route)?;
+        let if_index = self.if_index()?;
+        let prefix_len = ipnet::ip_mask_to_prefix(netmask)
+            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        let mut manager = route_manager::RouteManager::new()?;
+        let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
+        manager.delete(&route)?;
         Ok(())
     }
 
     fn add_route(&self, addr: IpAddr, netmask: IpAddr) -> io::Result<()> {
-        // let if_index = self.if_index()?;
-        // let prefix_len = ipnet::ip_mask_to_prefix(netmask)
-        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        // let mut manager = route_manager::RouteManager::new()?;
-        // let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
-        // manager.add(&route)?;
+        let if_index = self.if_index()?;
+        let prefix_len = ipnet::ip_mask_to_prefix(netmask)
+            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        let mut manager = route_manager::RouteManager::new()?;
+        let route = route_manager::Route::new(addr, prefix_len).with_if_index(if_index);
+        manager.add(&route)?;
         Ok(())
     }
 
     fn set_route(&self, old_route: Option<Route>, new_route: Route) -> io::Result<()> {
-        // let if_index = self.if_index()?;
-        // let mut manager = route_manager::RouteManager::new()?;
-        // if let Some(old_route) = old_route {
-        //     let prefix_len = ipnet::ip_mask_to_prefix(old_route.netmask)
-        //         .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        //     let route =
-        //         route_manager::Route::new(old_route.addr, prefix_len).with_if_index(if_index);
-        //     let result = manager.delete(&route);
-        //     if let Err(e) = result {
-        //         log::warn!("route {route:?} {e:?}");
-        //     }
-        // }
-        // 
-        // let prefix_len = ipnet::ip_mask_to_prefix(new_route.netmask)
-        //     .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
-        // let route = route_manager::Route::new(new_route.addr, prefix_len).with_if_index(if_index);
-        // manager.add(&route)?;
+        let if_index = self.if_index()?;
+        let mut manager = route_manager::RouteManager::new()?;
+        if let Some(old_route) = old_route {
+            let prefix_len = ipnet::ip_mask_to_prefix(old_route.netmask)
+                .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+            let route =
+                route_manager::Route::new(old_route.addr, prefix_len).with_if_index(if_index);
+            let result = manager.delete(&route);
+            if let Err(e) = result {
+                log::warn!("route {route:?} {e:?}");
+            }
+        }
+
+        let prefix_len = ipnet::ip_mask_to_prefix(new_route.netmask)
+            .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+        let route = route_manager::Route::new(new_route.addr, prefix_len).with_if_index(if_index);
+        manager.add(&route)?;
         Ok(())
     }
 

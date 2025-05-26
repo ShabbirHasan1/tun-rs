@@ -10,7 +10,12 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - **L3**: Network Layer (default for TUN interfaces).
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum Layer {
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd",target_os = "macos"))]
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "macos"
+    ))]
     L2,
     #[default]
     L3,
@@ -291,7 +296,9 @@ impl DeviceBuilder {
             let prefix = prefix?;
             let address = address?;
             let destination = destination.transpose()?;
-            device.set_network_address(address, prefix, destination)?;
+            device
+                .set_network_address(address, prefix, destination)
+                .unwrap();
         }
         if let Some(ipv6) = self.ipv6 {
             for (address, prefix) in ipv6 {
@@ -315,7 +322,7 @@ impl DeviceBuilder {
     #[cfg(any(feature = "async_io", feature = "async_tokio"))]
     pub fn build_async(self) -> io::Result<crate::AsyncDevice> {
         let sync_device = self.build_sync()?;
-        let device = crate::AsyncDevice::new_dev(sync_device.0)?;
+        let device = crate::AsyncDevice::new_dev(sync_device.0).unwrap();
         Ok(device)
     }
 }

@@ -35,6 +35,7 @@ pub struct Tap {
     s_bpf_fd: Fd,
     s_ndrv_fd: Fd,
     dev_feth: Feth,
+    #[allow(dead_code)]
     peer_feth: Feth,
     buffer: Mutex<VecDeque<BytesMut>>,
 }
@@ -116,11 +117,11 @@ impl Tap {
             if rs != 0 {
                 return Err(io::Error::last_os_error());
             }
-            let rs = unsafe { libc::ioctl(s_bpf_fd.inner, libc::BIOCSHDRCMPLT, &mut enable) };
+            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCSHDRCMPLT, &mut enable);
             if rs != 0 {
                 return Err(io::Error::last_os_error());
             }
-            let rs = unsafe { libc::ioctl(s_bpf_fd.inner, libc::BIOCPROMISC as u64, &mut enable) };
+            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCPROMISC as u64, &mut enable);
             if rs != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -133,12 +134,12 @@ impl Tap {
             })
         }
     }
-    pub fn as_s_ndrv_fd(&self) -> RawFd {
-        self.s_ndrv_fd.as_raw_fd()
-    }
-    pub fn as_s_bpf_fd(&self) -> RawFd {
-        self.s_bpf_fd.as_raw_fd()
-    }
+    // pub fn as_s_ndrv_fd(&self) -> RawFd {
+    //     self.s_ndrv_fd.as_raw_fd()
+    // }
+    // pub fn as_s_bpf_fd(&self) -> RawFd {
+    //     self.s_bpf_fd.as_raw_fd()
+    // }
     pub fn name(&self) -> &String {
         &self.dev_feth.name
     }
@@ -179,7 +180,7 @@ impl Tap {
     }
     fn recv_to_buffer(&self, bufs: &mut VecDeque<BytesMut>) -> io::Result<()> {
         let mut buffer = [0; BUFFER_LEN];
-        let len = self.s_bpf_fd.read(&mut buffer)?;
+        let len = self.s_bpf_fd.read(&mut buffer).unwrap();
         if len > 0 {
             let mut p = 0;
             unsafe {
@@ -188,7 +189,7 @@ impl Tap {
                     let bh_caplen = (*hdr).bh_caplen as usize;
                     let bh_hdrlen = (*hdr).bh_hdrlen as usize;
                     if bh_caplen > 0 && p + bh_hdrlen + bh_caplen <= len {
-                        let mut buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
+                        let buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
                         bufs.push_back(buf.into());
                     }
                     p += ((*hdr).bh_hdrlen as usize + bh_caplen + 3) & !3;
@@ -213,7 +214,7 @@ impl Tap {
                     let bh_caplen = (*hdr).bh_caplen as usize;
                     let bh_hdrlen = (*hdr).bh_hdrlen as usize;
                     if bh_caplen > 0 && p + bh_hdrlen + bh_caplen <= len {
-                        let mut buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
+                        let buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
                         if let Some(dst) = bufs.get_mut(num) {
                             let dst = dst.as_mut();
                             if dst.len() < buf.len() {

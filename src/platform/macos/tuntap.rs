@@ -1,10 +1,13 @@
+use crate::platform::macos::sys::{in6_ifreq, siocgiflladdr, siocsiflladdr, IN6_IFF_NODAD};
 use crate::platform::macos::tap::Tap;
+use crate::platform::unix::device::ctl;
 use crate::platform::unix::Tun;
+use crate::platform::ETHER_ADDR_LEN;
 use libc::{c_char, socklen_t, SYSPROTO_CONTROL, UTUN_OPT_IFNAME};
 use std::ffi::{c_void, CStr};
-use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
+use std::{io, mem, ptr};
 
 pub enum TunTap {
     Tun(Tun),
@@ -73,6 +76,69 @@ impl TunTap {
         match &self {
             TunTap::Tun(tun) => tun.recv_vectored(bufs),
             TunTap::Tap(tap) => tap.recv_vectored(bufs),
+        }
+    }
+    pub fn request(&self) -> io::Result<libc::ifreq> {
+        let tun_name = self.name()?;
+        unsafe {
+            let mut req: libc::ifreq = mem::zeroed();
+            ptr::copy_nonoverlapping(
+                tun_name.as_ptr() as *const c_char,
+                req.ifr_name.as_mut_ptr(),
+                tun_name.len(),
+            );
+            Ok(req)
+        }
+    }
+    pub fn request_v6(&self) -> io::Result<in6_ifreq> {
+        let tun_name = self.name()?;
+        unsafe {
+            let mut req: in6_ifreq = mem::zeroed();
+            ptr::copy_nonoverlapping(
+                tun_name.as_ptr() as *const c_char,
+                req.ifra_name.as_mut_ptr(),
+                tun_name.len(),
+            );
+            req.ifr_ifru.ifru_flags = IN6_IFF_NODAD as _;
+            Ok(req)
+        }
+    }
+    pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
+        match &self {
+            TunTap::Tun(_) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+            TunTap::Tap(_) => {
+                let mut ifr = self.request()?;
+                unsafe {
+                    ifr.ifr_ifru.ifru_addr.sa_family = libc::AF_LINK as _;
+                    ifr.ifr_ifru.ifru_addr.sa_len = ETHER_ADDR_LEN;
+                    for (i, v) in eth_addr.iter().enumerate() {
+                        ifr.ifr_ifru.ifru_addr.sa_data[i] = *v as _;
+                    }
+                    let fd = ctl()?;
+                    siocsiflladdr(fd.inner, &mut ifr)?;
+                }
+                Ok(())
+            }
+        }
+    }
+    pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
+        match &self {
+            TunTap::Tun(_) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+            TunTap::Tap(_) => {
+                let mut ifr = self.request()?;
+                unsafe {
+                    ifr.ifr_ifru.ifru_addr.sa_family = libc::AF_LINK as _;
+                    ifr.ifr_ifru.ifru_addr.sa_len = ETHER_ADDR_LEN;
+
+                    let fd = ctl()?;
+                    siocgiflladdr(fd.inner, &mut ifr)?;
+                    let mut eth_addr = [0; ETHER_ADDR_LEN as usize];
+                    for (i, v) in eth_addr.iter_mut().enumerate() {
+                        *v = ifr.ifr_ifru.ifru_addr.sa_data[i] as _;
+                    }
+                    Ok(eth_addr)
+                }
+            }
         }
     }
 }
